@@ -1,1 +1,436 @@
+import hashlib
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+
+st.set_page_config(
+    page_title="Project Daylight - Surface Truth Ledger",
+    page_icon="☀️",
+    layout="wide",
+)
+
+st.title("☀️ Project Daylight")
+st.markdown(
+    "A combined command dashboard for verifying surface conditions, "
+    "planning pioneer deployments, and modeling the return of the population."
+)
+
+
+@st.cache_data
+def generate_surface_telemetry() -> pd.DataFrame:
+    rng = np.random.default_rng(42)
+    sectors = [
+        "Sector 01: Old Dulles Airfield",
+        "Sector 02: Metro Core Ruins",
+        "Sector 03: Fairfax Ridge Outpost",
+        "Sector 04: Potomac Exclusion Zone",
+        "Sector 05: Blue Ridge Foothills",
+    ]
+    base_time = datetime.now() - timedelta(hours=24)
+    records = []
+
+    for index, sector in enumerate(sectors):
+        is_safe = index in (0, 2, 4)
+        oxygen = (
+            rng.uniform(20.2, 21.0)
+            if is_safe
+            else rng.uniform(10.5, 13.0)
+        )
+        toxins = (
+            rng.uniform(0.1, 1.2)
+            if is_safe
+            else rng.uniform(45.0, 90.0)
+        )
+        radiation = (
+            rng.uniform(0.05, 0.2)
+            if is_safe
+            else rng.uniform(3.5, 6.8)
+        )
+        payload = (
+            f"{sector}|O2:{oxygen:.2f}|Toxin:{toxins:.2f}|"
+            f"Rad:{radiation:.2f}"
+        )
+        payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+        records.append(
+            {
+                "Sector": sector,
+                "Timestamp": (
+                    base_time + timedelta(minutes=index * 30)
+                ).strftime("%Y-%m-%d %H:%M"),
+                "Oxygen": round(float(oxygen), 2),
+                "Toxins_PPM": round(float(toxins), 2),
+                "Radiation_mSv": round(float(radiation), 2),
+                "Habitability": "SAFE" if is_safe else "HAZARDOUS",
+                "Payload_Hash": payload_hash,
+                "Directorate_Toxins_PPM": round(float(toxins * 45), 2),
+            }
+        )
+
+    return pd.DataFrame(records)
+
+
+def run_pioneer_simulation(
+    equipment: str,
+    radiation_shielding: int,
+    seal_integrity: int,
+    exclude_sick: bool,
+    sector_safe: bool,
+) -> tuple[float, float]:
+    rng = np.random.default_rng(101)
+
+    if "Bio-Suits" in equipment:
+        base_survival = 0.65
+        risk_factor = 0.30
+    elif "Domes" in equipment:
+        base_survival = 0.82
+        risk_factor = 0.15
+    else:
+        base_survival = 0.95
+        risk_factor = 0.05
+
+    modifier = (radiation_shielding * 0.5 + seal_integrity * 0.5) / 100
+    success_probability = np.clip(
+        base_survival * modifier
+        - risk_factor * (1 - modifier)
+        + (0.08 if sector_safe else -0.15)
+        + (0.04 if exclude_sick else -0.04),
+        0.05,
+        0.99,
+    )
+    successful_trials = rng.binomial(1, float(success_probability), 1000)
+    survival_rate = float(np.mean(successful_trials) * 100)
+    return round(survival_rate, 1), round(float(success_probability) * 100, 1)
+
+
+@st.cache_data
+def generate_pioneer_roster(
+    num_members: int,
+    exclude_sick: bool,
+    prioritize_specialists: bool,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(202)
+    roles = [
+        "Atmospheric Engineer",
+        "Trauma Medic",
+        "Hydro-Botanist",
+        "Autonomous Drone Scout",
+        "Geological Surveyor",
+    ]
+    names = [
+        "Kaelen Vance",
+        "Lyra Chen",
+        "Marcus Thorne",
+        "Talia Vos",
+        "Orion Reed",
+        "Serafina Cruz",
+        "Jaxen Miller",
+        "Nadia Al-Fassi",
+        "Darius Cole",
+        "Elena Rostova",
+    ]
+
+    roster = []
+    for index in range(num_members):
+        role = (
+            roles[index % 3]
+            if prioritize_specialists
+            else roles[index % len(roles)]
+        )
+        compromised = bool(rng.choice([True, False], p=[0.35, 0.65]))
+        excluded = exclude_sick and compromised
+        roster.append(
+            {
+                "Operative ID": f"OP-{100 + index}",
+                "Name": names[index % len(names)],
+                "Assigned Specialty": role,
+                "Health Status": (
+                    "Compromised (Lung Sickness)"
+                    if compromised
+                    else "Stable"
+                ),
+                "Screening Result": "Unfit" if excluded else "Optimal",
+                "Deployment Notes": (
+                    "Deferred pending treatment"
+                    if excluded
+                    else "Cleared for first wave"
+                ),
+            }
+        )
+    return pd.DataFrame(roster)
+
+
+def run_evacuation_simulation(
+    population_millions: float,
+    daily_capacity_thousands: int,
+    expansion_rate: int,
+    strategy: str,
+    acclimation_buffer: bool,
+    pioneer_survival: float,
+) -> pd.DataFrame:
+    total_population = population_millions * 1_000_000
+    daily_rate = daily_capacity_thousands * 1000
+
+    if "Medical" in strategy:
+        lag = 15
+    elif "Infrastructure" in strategy:
+        lag = 5
+    else:
+        lag = 10
+    if acclimation_buffer:
+        lag += 3
+
+    readiness = float(np.clip(pioneer_survival / 85, 0.6, 1.15))
+    evacuated = 0.0
+    records = []
+
+    for day in range(1, 181):
+        if day < lag:
+            effective_rate = daily_rate * 0.2 * readiness
+        else:
+            multiplier = 1 + ((day - lag) / 30) * (expansion_rate * 0.05)
+            effective_rate = min(
+                daily_rate * multiplier * readiness,
+                total_population * 0.03,
+            )
+
+        evacuated = min(evacuated + effective_rate, total_population)
+        records.append(
+            {
+                "Day": day,
+                "Evacuated Population": round(evacuated),
+                "Percent Complete": round((evacuated / total_population) * 100, 2),
+            }
+        )
+
+    return pd.DataFrame(records)
+
+
+df = generate_surface_telemetry()
+
+with st.sidebar:
+    st.header("Command Center")
+    selected_sector = st.selectbox("Surface Sector", df["Sector"].tolist())
+    sector_row = df.loc[df["Sector"] == selected_sector].iloc[0]
+    is_sector_safe = sector_row["Habitability"] == "SAFE"
+    st.caption(
+        f"Verified status: {'SAFE' if is_sector_safe else 'HAZARDOUS'}"
+    )
+
+tab1, tab2, tab3 = st.tabs(
+    [
+        "Truth Ledger",
+        "Pioneer & Outpost Simulation",
+        "Mass Ascent Planner",
+    ]
+)
+
+with tab1:
+    st.header("Surface Truth Ledger")
+
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric(
+        "Verified Surface Status",
+        sector_row["Habitability"],
+        "Validated",
+    )
+    metric2.metric(
+        "Sensor Oxygen",
+        f"{sector_row['Oxygen']:.2f}%",
+        "Habitable" if sector_row["Oxygen"] >= 19.5 else "Below range",
+    )
+    metric3.metric(
+        "Toxin Concentration",
+        f"{sector_row['Toxins_PPM']:.2f} PPM",
+        f"Directorate: {sector_row['Directorate_Toxins_PPM']:.2f} PPM",
+    )
+
+    st.subheader("Cryptographic Verification")
+    comparison = df[
+        [
+            "Sector",
+            "Habitability",
+            "Toxins_PPM",
+            "Directorate_Toxins_PPM",
+            "Payload_Hash",
+        ]
+    ].copy()
+    comparison.columns = [
+        "Sector",
+        "Verified Reality",
+        "True Toxins (PPM)",
+        "Directorate Claimed (PPM)",
+        "SHA-256 Telemetry Hash",
+    ]
+    st.dataframe(comparison, width="stretch", hide_index=True)
+
+    if st.button("Broadcast Verified Ledger"):
+        st.success(
+            f"Ledger broadcast complete. Verified hash: "
+            f"`{sector_row['Payload_Hash'][:16]}...`"
+        )
+        st.balloons()
+
+with tab2:
+    st.header("Pioneer & Outpost Simulation")
+    st.markdown(f"Deployment target: **{selected_sector}**")
+
+    controls1, controls2 = st.columns(2)
+    with controls1:
+        equipment = st.selectbox(
+            "Infrastructure Mode",
+            [
+                "Light Bio-Suits (High Mobility / Low Shielding)",
+                "Pressurized Geodesic Domes (Medium Capacity)",
+                "Sealed Sub-Surface Outposts (High Resilience)",
+            ],
+        )
+        radiation_shielding = st.slider(
+            "Radiation Shielding Rating", 10, 100, 75
+        )
+        seal_integrity = st.slider(
+            "Airtight Seal and Filter Rating", 20, 100, 85
+        )
+    with controls2:
+        squad_size = int(
+            st.number_input(
+                "Pioneer Squad Headcount",
+                min_value=1,
+                max_value=50,
+                value=12,
+                step=1,
+            )
+        )
+        prioritize_specialists = st.checkbox(
+            "Prioritize Medical and Botanical Specialists",
+            value=True,
+        )
+        exclude_sick = st.checkbox(
+            "Exclude Candidates with Lung Sickness",
+            value=True,
+        )
+
+    survival_pct, success_score = run_pioneer_simulation(
+        equipment,
+        radiation_shielding,
+        seal_integrity,
+        exclude_sick,
+        is_sector_safe,
+    )
+
+    result1, result2, result3 = st.columns(3)
+    result1.metric("Estimated 30-Day Survival", f"{survival_pct:.1f}%")
+    result2.metric("Success Score", f"{success_score:.1f}%")
+    result3.metric(
+        "Configured Equipment Integrity",
+        f"{(radiation_shielding + seal_integrity) / 2:.1f}%",
+    )
+
+    roster = generate_pioneer_roster(
+        squad_size,
+        exclude_sick,
+        prioritize_specialists,
+    )
+    st.subheader("Pioneer Squad Roster")
+    st.dataframe(roster, width="stretch", hide_index=True)
+
+    st.session_state["pioneer_gear"] = equipment
+    st.session_state["pioneer_survival_pct"] = survival_pct
+
+    if st.button("Lock In Pioneer Squad and Gear"):
+        st.success(
+            f"Locked in {equipment} and {squad_size} pioneers "
+            f"for {selected_sector}."
+        )
+
+with tab3:
+    st.header("Mass Ascent and Migration Planner")
+    active_gear = st.session_state.get(
+        "pioneer_gear",
+        "Sealed Sub-Surface Outposts (High Resilience)",
+    )
+    active_survival = st.session_state.get("pioneer_survival_pct", 75.0)
+
+    st.markdown(
+        f"Planning ascent into **{selected_sector}** using "
+        f"**{active_gear}**."
+    )
+
+    parameters1, parameters2 = st.columns(2)
+    with parameters1:
+        population_millions = st.slider(
+            "Target Population (Millions)",
+            min_value=0.5,
+            max_value=200.0,
+            value=50.0,
+            step=0.5,
+        )
+        daily_capacity = st.slider(
+            "Daily Transport Capacity (Thousands)",
+            min_value=10,
+            max_value=1000,
+            value=100,
+            step=10,
+        )
+    with parameters2:
+        expansion_rate = st.slider(
+            "Infrastructure Expansion Rate",
+            min_value=1,
+            max_value=20,
+            value=10,
+            step=1,
+        )
+        strategy = st.selectbox(
+            "Phase Strategy",
+            [
+                "Balanced Population Return",
+                "Medical Triage First",
+                "Infrastructure Before Population",
+            ],
+        )
+        acclimation_buffer = st.checkbox(
+            "Add Acclimation Buffer",
+            value=True,
+        )
+
+    evacuation = run_evacuation_simulation(
+        population_millions,
+        daily_capacity,
+        expansion_rate,
+        strategy,
+        acclimation_buffer,
+        active_survival,
+    )
+
+    completion = float(evacuation["Percent Complete"].iloc[-1])
+    remaining = float(
+        population_millions
+        * 1_000_000
+        * (1 - completion / 100)
+    )
+
+    plan1, plan2, plan3 = st.columns(3)
+    plan1.metric("Pioneer Survival Baseline", f"{active_survival:.1f}%")
+    plan1.metric(
+        "Population Returned in 180 Days",
+        f"{completion:.1f}%",
+    )
+    plan2.metric(
+        "Projected Population Remaining",
+        f"{remaining / 1_000_000:.2f} million",
+    )
+    plan3.metric(
+        "Projected Daily Capacity",
+        f"{daily_capacity:,} thousand",
+    )
+
+    st.subheader("Evacuation Curve")
+    chart_data = evacuation.set_index("Day")
+    st.line_chart(chart_data["Evacuated Population"])
+
+    st.subheader("Phase Summary")
+    st.dataframe(evacuation.tail(30), width="stretch", hide_index=True)
 
